@@ -30,21 +30,21 @@ cp .env.example .env
 
 ### 3. Run
 
-**With Docker:**
+**With Docker (recommended):**
 ```bash
+# Set SCHEDULE in .env (e.g. SCHEDULE=08:00), then:
+docker compose up -d
+```
+
+The container runs as a long-lived service and checks on your configured schedule. Use `docker compose logs -f` to see output.
+
+**Run once (no schedule):**
+```bash
+# Leave SCHEDULE empty or unset
 docker compose run --rm monitor
-```
 
-**Without Docker:**
-```bash
-pip install requests  # not actually needed — uses stdlib only
+# Or without Docker:
 python monitor.py
-```
-
-**On a cron schedule (recommended):**
-```cron
-# Check every morning at 8am
-0 8 * * * cd /path/to/YNAB-Balance-Monitor && docker compose run --rm monitor
 ```
 
 ## Configuration
@@ -57,6 +57,8 @@ python monitor.py
 | `YNAB_CC_CATEGORIES` | No | all | Comma-separated category IDs or names to monitor |
 | `MONITOR_DAYS` | No | end of month | Number of days to project forward (leave empty for end of current month) |
 | `MIN_BALANCE` | No | `0` | Alert threshold in dollars |
+| `SCHEDULE` | No | — | `HH:MM` for daily at that time, or `Nh` for every N hours. Empty = run once and exit |
+| `TZ` | No | `UTC` | Timezone for daily schedule (e.g. `America/New_York`) |
 | `NTFY_TOPIC` | Yes | — | ntfy topic name |
 | `NTFY_URL` | No | `https://ntfy.sh` | ntfy server URL |
 

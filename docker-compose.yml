@@ -2,9 +2,4 @@ services:
   monitor:
     build: .
     env_file: .env
-    # Run once and exit (designed for cron or scheduled execution).
-    # To run on a schedule inside Docker, uncomment the entrypoint below
-    # and adjust the cron expression as needed.
-    #
-    # entrypoint: >
-    #   sh -c 'echo "0 8 * * * python /app/monitor.py" | crontab - && crond -f'
+    restart: unless-stopped

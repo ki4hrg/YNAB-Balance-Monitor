@@ -3,8 +3,10 @@
 
 import calendar
 import os
+import signal
 import sys
 import json
+import time
 from datetime import datetime, timedelta, date
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
@@ -21,6 +23,8 @@ MONITOR_DAYS = os.environ.get("MONITOR_DAYS", "")  # empty = end of current mont
 MIN_BALANCE = int(os.environ.get("MIN_BALANCE", "0"))  # in dollars
 NTFY_URL = os.environ.get("NTFY_URL", "https://ntfy.sh")
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
+SCHEDULE = os.environ.get("SCHEDULE", "")  # e.g. "08:00" for daily at 8am, "6h" for every 6 hours
+TZ = os.environ.get("TZ", "")
 
 YNAB_BASE = "https://api.ynab.com/v1"
 
@@ -337,9 +341,8 @@ def validate_config():
         sys.exit(1)
 
 
-def main():
-    validate_config()
-
+def run_check():
+    """Run one balance check cycle."""
     end_date = get_end_date()
 
     print("=" * 60)
@@ -358,6 +361,98 @@ def main():
         send_notification(min_balance, min_date)
     else:
         print(f"\n✓ Balance stays above ${MIN_BALANCE:,.2f} threshold.")
+
+
+# ---------------------------------------------------------------------------
+# Scheduling
+# ---------------------------------------------------------------------------
+
+def _parse_schedule(schedule):
+    """Parse SCHEDULE value into a sleep strategy.
+
+    Supported formats:
+      "08:00"  - run daily at this time (24h format)
+      "6h"     - run every N hours
+      ""       - run once and exit
+    """
+    s = schedule.strip()
+    if not s:
+        return None
+
+    # Interval format: "6h", "12h", etc.
+    if s.endswith("h"):
+        try:
+            hours = float(s[:-1])
+            return ("interval", hours * 3600)
+        except ValueError:
+            pass
+
+    # Daily time format: "HH:MM"
+    if ":" in s:
+        try:
+            hour, minute = s.split(":")
+            return ("daily", int(hour), int(minute))
+        except ValueError:
+            pass
+
+    print(f"Invalid SCHEDULE format: '{s}'. Use 'HH:MM' or 'Nh'.", file=sys.stderr)
+    sys.exit(1)
+
+
+def _seconds_until(hour, minute):
+    """Seconds from now until the next occurrence of HH:MM today or tomorrow."""
+    now = datetime.now()
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return (target - now).total_seconds()
+
+
+def main():
+    validate_config()
+
+    schedule = _parse_schedule(SCHEDULE)
+
+    if schedule is None:
+        # Run once and exit
+        run_check()
+        return
+
+    # Run on a schedule
+    shutdown = False
+
+    def handle_signal(signum, frame):
+        nonlocal shutdown
+        print("\nShutting down...")
+        shutdown = True
+
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+
+    if schedule[0] == "daily":
+        _, hour, minute = schedule
+        print(f"Scheduled to run daily at {hour:02d}:{minute:02d}")
+        while not shutdown:
+            wait = _seconds_until(hour, minute)
+            print(f"Next run in {wait / 3600:.1f} hours")
+            # Sleep in short intervals to stay responsive to signals
+            while wait > 0 and not shutdown:
+                time.sleep(min(wait, 60))
+                wait -= 60
+            if not shutdown:
+                run_check()
+    else:
+        _, interval = schedule
+        print(f"Scheduled to run every {interval / 3600:.1f} hours")
+        # Run immediately on startup, then on interval
+        run_check()
+        while not shutdown:
+            wait = interval
+            while wait > 0 and not shutdown:
+                time.sleep(min(wait, 60))
+                wait -= 60
+            if not shutdown:
+                run_check()
 
 
 if __name__ == "__main__":
