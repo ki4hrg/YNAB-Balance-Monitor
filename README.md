@@ -1,6 +1,6 @@
 # YNAB Balance Monitor
 
-Projects the minimum balance of a checking account over the next N days based on scheduled transactions and credit card payment obligations from [YNAB](https://www.ynab.com/). Sends an [ntfy](https://ntfy.sh) alert if the balance is projected to drop below a threshold.
+Projects the minimum balance of a checking account through the end of the current month based on scheduled transactions and credit card payment obligations from [YNAB](https://www.ynab.com/). Sends an [ntfy](https://ntfy.sh) alert if the balance is projected to drop below a threshold.
 
 Useful for keeping most of your cash in a high-yield savings account while making sure your checking account stays funded.
 
@@ -55,7 +55,7 @@ python monitor.py
 | `YNAB_ACCOUNT_ID` | Yes | — | ID of the checking account to monitor |
 | `YNAB_BUDGET_ID` | No | `last-used` | Budget ID (or `last-used`) |
 | `YNAB_CC_CATEGORIES` | No | all | Comma-separated category IDs or names to monitor |
-| `MONITOR_DAYS` | No | `30` | Number of days to project forward |
+| `MONITOR_DAYS` | No | end of month | Number of days to project forward (leave empty for end of current month) |
 | `MIN_BALANCE` | No | `0` | Alert threshold in dollars |
 | `NTFY_TOPIC` | Yes | — | ntfy topic name |
 | `NTFY_URL` | No | `https://ntfy.sh` | ntfy server URL |
@@ -65,12 +65,12 @@ python monitor.py
 ```
 ============================================================
 YNAB Balance Monitor — 2026-02-07 08:00
-Monitoring next 30 days, threshold: $500.00
+Projecting through 2026-02-28, threshold: $500.00
 ============================================================
 Account: Primary Checking
 Current balance: $2,450.00
 
-Scheduled transactions in next 30 days: 3
+Scheduled transactions through 2026-02-28: 3
   2026-02-10  Rent                            $ -1,500.00
   2026-02-14  Paycheck                        $  3,200.00
   2026-02-28  Car Payment                     $   -450.00

@@ -17,7 +17,7 @@ YNAB_API_TOKEN = os.environ.get("YNAB_API_TOKEN", "")
 YNAB_BUDGET_ID = os.environ.get("YNAB_BUDGET_ID", "last-used")
 YNAB_ACCOUNT_ID = os.environ.get("YNAB_ACCOUNT_ID", "")
 YNAB_CC_CATEGORIES = os.environ.get("YNAB_CC_CATEGORIES", "")  # comma-separated IDs, empty = all
-MONITOR_DAYS = int(os.environ.get("MONITOR_DAYS", "30"))
+MONITOR_DAYS = os.environ.get("MONITOR_DAYS", "")  # empty = end of current month
 MIN_BALANCE = int(os.environ.get("MIN_BALANCE", "0"))  # in dollars
 NTFY_URL = os.environ.get("NTFY_URL", "https://ntfy.sh")
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
@@ -52,6 +52,19 @@ def milliunits_to_dollars(milliunits):
 # ---------------------------------------------------------------------------
 # Core logic
 # ---------------------------------------------------------------------------
+
+def get_end_date():
+    """Compute the projection end date.
+
+    If MONITOR_DAYS is set, project that many days forward.
+    Otherwise, project through the end of the current month.
+    """
+    today = datetime.now().date()
+    if MONITOR_DAYS:
+        return today + timedelta(days=int(MONITOR_DAYS))
+    last_day = calendar.monthrange(today.year, today.month)[1]
+    return date(today.year, today.month, last_day)
+
 
 def get_account_balance():
     """Get the current balance of the monitored account."""
@@ -135,7 +148,7 @@ def _expand_occurrences(next_date, frequency, start, end):
     return dates
 
 
-def get_scheduled_transactions():
+def get_scheduled_transactions(end_date):
     """Get all scheduled transactions for the monitored account.
 
     Expands recurring transactions into individual occurrences within the
@@ -143,7 +156,6 @@ def get_scheduled_transactions():
     """
     data = ynab_get(f"/budgets/{YNAB_BUDGET_ID}/scheduled_transactions")
     today = datetime.now().date()
-    end_date = today + timedelta(days=MONITOR_DAYS)
 
     transactions = []
     for txn in data["scheduled_transactions"]:
@@ -171,7 +183,7 @@ def get_scheduled_transactions():
             })
 
     transactions.sort(key=lambda t: t["date"])
-    print(f"\nScheduled transactions in next {MONITOR_DAYS} days: {len(transactions)}")
+    print(f"\nScheduled transactions through {end_date}: {len(transactions)}")
     for t in transactions:
         print(f"  {t['date']}  {t['label']:40s}  ${t['amount']:>10,.2f}")
     return transactions
@@ -225,7 +237,7 @@ def get_cc_payment_amounts():
     return cc_payments, total
 
 
-def project_minimum_balance(current_balance, scheduled_transactions, cc_payments):
+def project_minimum_balance(current_balance, scheduled_transactions, cc_payments, end_date):
     """Walk day-by-day to find the minimum projected balance.
 
     CC payments that are already in scheduled_transactions (as transfers to CC
@@ -233,7 +245,6 @@ def project_minimum_balance(current_balance, scheduled_transactions, cc_payments
     applied on day 1 (conservative: assumes they could hit at any time).
     """
     today = datetime.now().date()
-    end_date = today + timedelta(days=MONITOR_DAYS)
 
     # Identify which CC payments are already covered by scheduled transfers
     remaining_cc = dict(cc_payments)  # shallow copy of outer dict
@@ -329,15 +340,17 @@ def validate_config():
 def main():
     validate_config()
 
+    end_date = get_end_date()
+
     print("=" * 60)
     print(f"YNAB Balance Monitor — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    print(f"Monitoring next {MONITOR_DAYS} days, threshold: ${MIN_BALANCE:,.2f}")
+    print(f"Projecting through {end_date}, threshold: ${MIN_BALANCE:,.2f}")
     print("=" * 60)
 
     balance = get_account_balance()
-    transactions = get_scheduled_transactions()
+    transactions = get_scheduled_transactions(end_date)
     cc_payments, cc_total = get_cc_payment_amounts()
-    min_balance, min_date = project_minimum_balance(balance, transactions, cc_payments)
+    min_balance, min_date = project_minimum_balance(balance, transactions, cc_payments, end_date)
 
     if min_balance < MIN_BALANCE:
         shortfall = MIN_BALANCE - min_balance
