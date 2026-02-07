@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """YNAB Balance Monitor - Projects minimum checking account balance and alerts via ntfy."""
 
+import calendar
 import os
 import sys
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -63,8 +63,84 @@ def get_account_balance():
     return balance
 
 
+def _add_months(d, months):
+    """Add months to a date, clamping to the last day of the target month."""
+    month = d.month - 1 + months
+    year = d.year + month // 12
+    month = month % 12 + 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def _expand_occurrences(next_date, frequency, start, end):
+    """Generate all occurrence dates of a recurring transaction within [start, end].
+
+    next_date:  the next scheduled occurrence (from the API)
+    frequency:  YNAB frequency string
+    start/end:  the monitoring window bounds
+    """
+    # Map YNAB frequency to a delta-generating function.
+    # Each function returns the next date given the current one.
+    DELTAS = {
+        "daily":          lambda d: d + timedelta(days=1),
+        "weekly":         lambda d: d + timedelta(weeks=1),
+        "everyOtherWeek": lambda d: d + timedelta(weeks=2),
+        "every4Weeks":    lambda d: d + timedelta(weeks=4),
+        "monthly":        lambda d: _add_months(d, 1),
+        "everyOtherMonth":lambda d: _add_months(d, 2),
+        "every3Months":   lambda d: _add_months(d, 3),
+        "every4Months":   lambda d: _add_months(d, 4),
+        "twiceAMonth":    None,  # special case
+        "twiceAYear":     lambda d: _add_months(d, 6),
+        "yearly":         lambda d: _add_months(d, 12),
+        "everyOtherYear": lambda d: _add_months(d, 24),
+    }
+
+    if frequency == "never" or frequency not in DELTAS:
+        # One-time transaction — just return it if in range
+        if start <= next_date <= end:
+            return [next_date]
+        return []
+
+    # Special handling for twiceAMonth: YNAB schedules on the 1st & 15th
+    # (or the original day and that day + ~15). We approximate by using
+    # the next_date's day-of-month and that day ± 15.
+    if frequency == "twiceAMonth":
+        dates = []
+        # Generate monthly anchors, then add both the "first" and "second" hit
+        day1 = next_date.day
+        day2 = day1 + 15 if day1 <= 15 else day1 - 15
+        d = next_date.replace(day=1)  # start of month
+        # Back up one month to make sure we don't miss anything
+        d = _add_months(d, -1)
+        month_end = end
+        while d <= month_end:
+            last_day = calendar.monthrange(d.year, d.month)[1]
+            for target_day in (day1, day2):
+                clamped = min(target_day, last_day)
+                candidate = date(d.year, d.month, clamped)
+                if start <= candidate <= end:
+                    dates.append(candidate)
+            d = _add_months(d, 1)
+        return sorted(set(dates))
+
+    # General case: walk forward from next_date using the delta function
+    advance = DELTAS[frequency]
+    dates = []
+    d = next_date
+    while d <= end:
+        if d >= start:
+            dates.append(d)
+        d = advance(d)
+    return dates
+
+
 def get_scheduled_transactions():
-    """Get all scheduled transactions for the monitored account."""
+    """Get all scheduled transactions for the monitored account.
+
+    Expands recurring transactions into individual occurrences within the
+    monitoring window.
+    """
     data = ynab_get(f"/budgets/{YNAB_BUDGET_ID}/scheduled_transactions")
     today = datetime.now().date()
     end_date = today + timedelta(days=MONITOR_DAYS)
@@ -76,22 +152,28 @@ def get_scheduled_transactions():
         if txn.get("deleted", False):
             continue
 
-        txn_date = datetime.strptime(txn["date"], "%Y-%m-%d").date()
-        if txn_date < today or txn_date > end_date:
-            continue
-
+        next_date = datetime.strptime(txn["date"], "%Y-%m-%d").date()
+        frequency = txn.get("frequency", "never")
         amount = milliunits_to_dollars(txn["amount"])
-        transactions.append({
-            "date": txn_date,
-            "amount": amount,
-            "payee": txn.get("payee_name", "Unknown"),
-            "transfer_account_id": txn.get("transfer_account_id"),
-        })
+        payee = txn.get("payee_name", "Unknown")
+        transfer_account_id = txn.get("transfer_account_id")
+
+        occurrences = _expand_occurrences(next_date, frequency, today, end_date)
+        for occ_date in occurrences:
+            freq_label = f" ({frequency})" if frequency != "never" else ""
+            transactions.append({
+                "date": occ_date,
+                "amount": amount,
+                "payee": payee,
+                "transfer_account_id": transfer_account_id,
+                "frequency": frequency,
+                "label": f"{payee}{freq_label}",
+            })
 
     transactions.sort(key=lambda t: t["date"])
     print(f"\nScheduled transactions in next {MONITOR_DAYS} days: {len(transactions)}")
     for t in transactions:
-        print(f"  {t['date']}  {t['payee']:30s}  ${t['amount']:>10,.2f}")
+        print(f"  {t['date']}  {t['label']:40s}  ${t['amount']:>10,.2f}")
     return transactions
 
 
