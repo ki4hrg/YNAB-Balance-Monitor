@@ -19,7 +19,9 @@ Useful for keeping most of your cash in a high-yield savings account while makin
 
 - Go to [YNAB Account Settings → Developer Settings](https://app.ynab.com/settings/developer)
 - Create a Personal Access Token
-- Find your account ID: visit `https://api.ynab.com/v1/budgets/last-used/accounts?access_token=YOUR_TOKEN` and locate your checking account's `id`
+- Find your account ID:
+  - Visit `https://api.ynab.com/v1/budgets/last-used/accounts?access_token=YOUR_TOKEN` and locate your checking account's `id` or
+  - Choose the account in the sidebar and look at the URL: `https://app.ynab.com/(budget ID)/accounts/(account ID)`  
 
 ### 2. Configure
 
