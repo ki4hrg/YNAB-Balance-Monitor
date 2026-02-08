@@ -168,7 +168,7 @@ def get_scheduled_transactions(end_date):
         if txn.get("deleted", False):
             continue
 
-        next_date = datetime.strptime(txn["date"], "%Y-%m-%d").date()
+        next_date = datetime.strptime(txn.get("date_next") or txn.get("date_first", ""), "%Y-%m-%d").date()
         frequency = txn.get("frequency", "never")
         amount = milliunits_to_dollars(txn["amount"])
         payee = txn.get("payee_name", "Unknown")
