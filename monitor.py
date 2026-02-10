@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""YNAB Balance Monitor - Projects minimum checking account balance and alerts via ntfy."""
+"""YNAB Balance Monitor - Projects minimum checking account balance and alerts via Apprise."""
 
 import calendar
 import os
@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, date
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
+import apprise
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -21,8 +23,7 @@ YNAB_ACCOUNT_ID = os.environ.get("YNAB_ACCOUNT_ID", "")
 YNAB_CC_CATEGORIES = os.environ.get("YNAB_CC_CATEGORIES", "")  # comma-separated IDs, empty = all
 MONITOR_DAYS = os.environ.get("MONITOR_DAYS", "")  # empty = end of current month
 MIN_BALANCE = int(os.environ.get("MIN_BALANCE", "0"))  # in dollars
-NTFY_URL = os.environ.get("NTFY_URL", "https://ntfy.sh")
-NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
+APPRISE_URLS = os.environ.get("APPRISE_URLS", "")  # comma-separated Apprise URLs
 SCHEDULE = os.environ.get("SCHEDULE", "")  # e.g. "08:00" for daily at 8am, "6h" for every 6 hours
 TZ = os.environ.get("TZ", "")
 
@@ -298,7 +299,7 @@ def project_minimum_balance(current_balance, scheduled_transactions, cc_payments
 # ---------------------------------------------------------------------------
 
 def send_notification(min_balance, min_date):
-    """Send an alert via ntfy."""
+    """Send an alert via Apprise."""
     title = "YNAB Balance Alert"
     message = (
         f"Your checking account balance is projected to drop to "
@@ -306,20 +307,19 @@ def send_notification(min_balance, min_date):
         f"Minimum threshold: ${MIN_BALANCE:,.2f}."
     )
 
-    url = f"{NTFY_URL.rstrip('/')}/{NTFY_TOPIC}"
-    data = message.encode("utf-8")
-    req = Request(url, data=data, method="POST", headers={
-        "Title": title,
-        "Priority": "high" if min_balance < 0 else "default",
-        "Tags": "warning,dollar",
-    })
+    notifier = apprise.Apprise()
+    for url in APPRISE_URLS.split(","):
+        url = url.strip()
+        if url:
+            notifier.add(url)
 
-    try:
-        with urlopen(req) as resp:
-            print(f"\nNotification sent to {NTFY_TOPIC}")
-    except (HTTPError, URLError) as e:
-        print(f"Failed to send notification: {e}", file=sys.stderr)
+    notify_type = apprise.NotifyType.WARNING if min_balance < 0 else apprise.NotifyType.INFO
+
+    if not notifier.notify(title=title, body=message, notify_type=notify_type):
+        print("Failed to send notification via Apprise", file=sys.stderr)
         sys.exit(1)
+
+    print(f"\nNotification sent via Apprise")
 
 
 # ---------------------------------------------------------------------------
@@ -333,8 +333,8 @@ def validate_config():
         errors.append("YNAB_API_TOKEN is required")
     if not YNAB_ACCOUNT_ID:
         errors.append("YNAB_ACCOUNT_ID is required")
-    if not NTFY_TOPIC:
-        errors.append("NTFY_TOPIC is required")
+    if not APPRISE_URLS:
+        errors.append("APPRISE_URLS is required")
     if errors:
         for e in errors:
             print(f"Error: {e}", file=sys.stderr)
