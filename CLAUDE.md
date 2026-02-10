@@ -2,11 +2,11 @@
 
 ## Project overview
 
-A lightweight Python tool that projects the minimum balance of a checking account through the end of the current month using YNAB data, and sends ntfy alerts if the balance is projected to drop below a threshold. Designed for users who keep most cash in an HYSA and need early warning to transfer funds to checking.
+A lightweight Python tool that projects the minimum balance of a checking account through the end of the current month using YNAB data, and sends alerts via Apprise if the balance is projected to drop below a threshold. Designed for users who keep most cash in an HYSA and need early warning to transfer funds to checking.
 
 ## Architecture
 
-- **Single file**: `monitor.py` — all logic in one stdlib-only Python script (no pip dependencies)
+- **Single file**: `monitor.py` — all logic in one Python script (only external dependency: `apprise`)
 - **Docker**: `Dockerfile` + `docker-compose.yml` — runs as a long-lived service with built-in scheduling
 - **Config**: Environment variables via `stack.env` (Portainer) or `.env`
 
@@ -19,7 +19,7 @@ A lightweight Python tool that projects the minimum balance of a checking accoun
 
 ## Development notes
 
-- Uses only Python stdlib (`urllib`, `json`, `calendar`) — no external dependencies
+- Uses Python stdlib (`urllib`, `json`, `calendar`) plus `apprise` for notifications
 - `python -u` flag in Dockerfile for unbuffered output (required for Docker log visibility)
 - `stack.env` in docker-compose.yml for Portainer compatibility
 - `SCHEDULE` env var supports `HH:MM` (daily) or `Nh` (interval) formats
