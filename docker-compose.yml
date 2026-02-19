@@ -1,5 +1,5 @@
 services:
   monitor:
     build: .
-    env_file: stack.env
+    env_file: .env
     restart: unless-stopped
