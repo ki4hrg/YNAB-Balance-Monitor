@@ -25,6 +25,8 @@ MONITOR_DAYS = os.environ.get("MONITOR_DAYS", "")  # empty = end of current mont
 MIN_BALANCE = int(os.environ.get("MIN_BALANCE", "0"))  # in dollars
 APPRISE_URLS = os.environ.get("APPRISE_URLS", "")  # comma-separated Apprise URLs
 SCHEDULE = os.environ.get("SCHEDULE", "")  # e.g. "08:00" for daily at 8am, "6h" for every 6 hours
+UPDATE_SCHEDULE = os.environ.get("UPDATE_SCHEDULE", "")  # when to send routine balance update notifications
+UPDATE_APPRISE_URLS = os.environ.get("UPDATE_APPRISE_URLS", "")  # defaults to APPRISE_URLS if empty
 TZ = os.environ.get("TZ", "")
 
 YNAB_BASE = "https://api.ynab.com/v1"
@@ -298,8 +300,18 @@ def project_minimum_balance(current_balance, scheduled_transactions, cc_payments
 # Notification
 # ---------------------------------------------------------------------------
 
-def send_notification(min_balance, min_date):
-    """Send an alert via Apprise."""
+def _build_notifier(urls_str):
+    """Build an Apprise notifier from a comma-separated URL string."""
+    notifier = apprise.Apprise()
+    for url in urls_str.split(","):
+        url = url.strip()
+        if url:
+            notifier.add(url)
+    return notifier
+
+
+def send_alert_notification(min_balance, min_date):
+    """Send a below-threshold alert via Apprise."""
     title = "YNAB Balance Alert"
     message = (
         f"Your checking account balance is projected to drop to "
@@ -307,19 +319,34 @@ def send_notification(min_balance, min_date):
         f"Minimum threshold: ${MIN_BALANCE:,.2f}."
     )
 
-    notifier = apprise.Apprise()
-    for url in APPRISE_URLS.split(","):
-        url = url.strip()
-        if url:
-            notifier.add(url)
-
+    notifier = _build_notifier(APPRISE_URLS)
     notify_type = apprise.NotifyType.WARNING if min_balance < 0 else apprise.NotifyType.INFO
 
     if not notifier.notify(title=title, body=message, notify_type=notify_type):
-        print("Failed to send notification via Apprise", file=sys.stderr)
+        print("Failed to send alert via Apprise", file=sys.stderr)
         sys.exit(1)
 
-    print(f"\nNotification sent via Apprise")
+    print("\nAlert notification sent via Apprise")
+
+
+def send_update_notification(min_balance, min_date, end_date):
+    """Send a routine projected-balance update via Apprise."""
+    title = "YNAB Balance Update"
+    status = "below threshold" if min_balance < MIN_BALANCE else "on track"
+    message = (
+        f"Projected minimum: ${min_balance:,.2f} on {min_date.strftime('%b %d')} "
+        f"(through {end_date.strftime('%b %d, %Y')}). "
+        f"Threshold: ${MIN_BALANCE:,.2f} — {status}."
+    )
+
+    urls = UPDATE_APPRISE_URLS or APPRISE_URLS
+    notifier = _build_notifier(urls)
+    notify_type = apprise.NotifyType.WARNING if min_balance < MIN_BALANCE else apprise.NotifyType.SUCCESS
+
+    if not notifier.notify(title=title, body=message, notify_type=notify_type):
+        print("Failed to send update notification via Apprise", file=sys.stderr)
+    else:
+        print("\nUpdate notification sent via Apprise")
 
 
 # ---------------------------------------------------------------------------
@@ -341,8 +368,13 @@ def validate_config():
         sys.exit(1)
 
 
-def run_check():
-    """Run one balance check cycle."""
+def run_check(send_update=False):
+    """Run one balance check cycle.
+
+    Always evaluates the alert threshold and fires an alert notification if
+    the projected minimum falls below MIN_BALANCE.  When send_update is True,
+    also fires a routine update notification regardless of the threshold.
+    """
     end_date = get_end_date()
 
     print("=" * 60)
@@ -358,9 +390,12 @@ def run_check():
     if min_balance < MIN_BALANCE:
         shortfall = MIN_BALANCE - min_balance
         print(f"\n⚠ ALERT: Projected balance drops ${shortfall:,.2f} below threshold!")
-        send_notification(min_balance, min_date)
+        send_alert_notification(min_balance, min_date)
     else:
         print(f"\n✓ Balance stays above ${MIN_BALANCE:,.2f} threshold.")
+
+    if send_update:
+        send_update_notification(min_balance, min_date, end_date)
 
 
 # ---------------------------------------------------------------------------
@@ -368,12 +403,12 @@ def run_check():
 # ---------------------------------------------------------------------------
 
 def _parse_schedule(schedule):
-    """Parse SCHEDULE value into a sleep strategy.
+    """Parse a schedule string into a descriptor tuple.
 
     Supported formats:
       "08:00"  - run daily at this time (24h format)
       "6h"     - run every N hours
-      ""       - run once and exit
+      ""       - run once and exit (returns None)
     """
     s = schedule.strip()
     if not s:
@@ -395,30 +430,45 @@ def _parse_schedule(schedule):
         except ValueError:
             pass
 
-    print(f"Invalid SCHEDULE format: '{s}'. Use 'HH:MM' or 'Nh'.", file=sys.stderr)
+    print(f"Invalid schedule format: '{s}'. Use 'HH:MM' or 'Nh'.", file=sys.stderr)
     sys.exit(1)
 
 
-def _seconds_until(hour, minute):
-    """Seconds from now until the next occurrence of HH:MM today or tomorrow."""
-    now = datetime.now()
-    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if target <= now:
-        target += timedelta(days=1)
-    return (target - now).total_seconds()
+def _next_occurrence(schedule, after=None):
+    """Return the datetime of the next occurrence of schedule after `after` (default: now)."""
+    if after is None:
+        after = datetime.now()
+    if schedule[0] == "interval":
+        return after + timedelta(seconds=schedule[1])
+    else:
+        _, hour, minute = schedule
+        t = after.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if t <= after:
+            t += timedelta(days=1)
+        return t
+
+
+def _describe_schedule(label, parsed):
+    """Print a human-readable description of a parsed schedule."""
+    if parsed[0] == "interval":
+        print(f"{label}: every {parsed[1] / 3600:.4g} hours")
+    else:
+        _, hour, minute = parsed
+        print(f"{label}: daily at {hour:02d}:{minute:02d}")
 
 
 def main():
     validate_config()
 
     schedule = _parse_schedule(SCHEDULE)
+    update_schedule = _parse_schedule(UPDATE_SCHEDULE) if UPDATE_SCHEDULE else None
 
-    if schedule is None:
+    if schedule is None and update_schedule is None:
         # Run once and exit
         run_check()
         return
 
-    # Run on a schedule
+    # Run on a schedule (at least one of check / update is recurring)
     shutdown = False
 
     def handle_signal(signum, frame):
@@ -429,30 +479,52 @@ def main():
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
-    if schedule[0] == "daily":
-        _, hour, minute = schedule
-        print(f"Scheduled to run daily at {hour:02d}:{minute:02d}")
-        while not shutdown:
-            wait = _seconds_until(hour, minute)
-            print(f"Next run in {wait / 3600:.1f} hours")
-            # Sleep in short intervals to stay responsive to signals
-            while wait > 0 and not shutdown:
-                time.sleep(min(wait, 60))
-                wait -= 60
-            if not shutdown:
-                run_check()
+    # Determine initial next-run times.
+    # Interval schedules fire immediately on startup; daily schedules wait for
+    # their first configured time.
+    now = datetime.now()
+
+    if schedule:
+        _describe_schedule("Check schedule", schedule)
+        next_check = now if schedule[0] == "interval" else _next_occurrence(schedule)
     else:
-        _, interval = schedule
-        print(f"Scheduled to run every {interval / 3600:.1f} hours")
-        # Run immediately on startup, then on interval
-        run_check()
-        while not shutdown:
-            wait = interval
+        next_check = None
+
+    if update_schedule:
+        _describe_schedule("Update schedule", update_schedule)
+        next_update = now if update_schedule[0] == "interval" else _next_occurrence(update_schedule)
+    else:
+        next_update = None
+
+    while not shutdown:
+        # Sleep until the sooner of the two pending events
+        candidates = [t for t in [next_check, next_update] if t is not None]
+        if not candidates:
+            break
+        wake_time = min(candidates)
+
+        wait = (wake_time - datetime.now()).total_seconds()
+        if wait > 0:
+            print(f"Next event in {wait / 3600:.4g} hours")
             while wait > 0 and not shutdown:
                 time.sleep(min(wait, 60))
                 wait -= 60
-            if not shutdown:
-                run_check()
+
+        if shutdown:
+            break
+
+        now = datetime.now()
+        do_check = next_check is not None and now >= next_check
+        do_update = next_update is not None and now >= next_update
+
+        # Run the projection (always checks alert threshold; optionally sends
+        # an update notification when the update schedule fires).
+        run_check(send_update=do_update)
+
+        if do_check and schedule:
+            next_check = _next_occurrence(schedule)
+        if do_update and update_schedule:
+            next_update = _next_occurrence(update_schedule)
 
 
 if __name__ == "__main__":
