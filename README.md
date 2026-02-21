@@ -11,7 +11,8 @@ Useful for keeping most of your cash in a high-yield savings account while makin
 3. Fetches credit card payment category balances (money earmarked to pay CC bills)
 4. Deduplicates — scheduled transfers to CC accounts aren't double-counted
 5. Walks day-by-day to find the **minimum projected balance**
-6. If it drops below your threshold, sends an ntfy notification
+6. If it drops below your threshold, sends an **alert** notification
+7. On the update schedule (if configured), sends a routine **update** notification with the projected minimum regardless of threshold
 
 ## Setup
 
@@ -60,9 +61,10 @@ python monitor.py
 | `MONITOR_DAYS` | No | end of month | Number of days to project forward (leave empty for end of current month) |
 | `MIN_BALANCE` | No | `0` | Alert threshold in dollars |
 | `SCHEDULE` | No | — | `HH:MM` for daily at that time, or `Nh` for every N hours. Empty = run once and exit |
+| `UPDATE_SCHEDULE` | No | — | Same format as `SCHEDULE`. When set, sends a routine balance update notification on this cadence, independent of `SCHEDULE` |
+| `APPRISE_URLS` | Yes | — | Comma-separated [Apprise URLs](https://github.com/caronc/apprise/wiki) for alert notifications |
+| `UPDATE_APPRISE_URLS` | No | `APPRISE_URLS` | Comma-separated Apprise URLs for update notifications. Useful for routing updates to a lower-priority channel |
 | `TZ` | No | `UTC` | Timezone for daily schedule (e.g. `America/New_York`) |
-| `NTFY_TOPIC` | Yes | — | ntfy topic name |
-| `NTFY_URL` | No | `https://ntfy.sh` | ntfy server URL |
 
 ## Example output
 
