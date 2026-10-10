@@ -1,0 +1,104 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      # Pull requests build the image to validate the Dockerfile but never push.
+      - uses: docker/login-action@v4
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/ki4hrg/ynab-balance-monitor
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=sha
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          # docker-peter is x86_64.
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Notify Dockhand to pull the freshly pushed image and redeploy.
+  deploy:
+    needs: image
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Trigger Dockhand sync
+        # Dockhand's git-stack webhook is a plain GET; the secret is a query param
+        # (?secret=…), not an Authorization header. The secret can live in
+        # WEBHOOK_TOKEN (or DOCKHAND_WEBHOOK_TOKEN) or already be baked into the URL.
+        env:
+          WEBHOOK_URL: >-
+            ${{ secrets.WEBHOOK_URL || vars.WEBHOOK_URL
+                || secrets.DOCKHAND_WEBHOOK_URL || vars.DOCKHAND_WEBHOOK_URL }}
+          WEBHOOK_TOKEN: >-
+            ${{ secrets.WEBHOOK_TOKEN || vars.WEBHOOK_TOKEN
+                || secrets.DOCKHAND_WEBHOOK_TOKEN || vars.DOCKHAND_WEBHOOK_TOKEN }}
+        run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "No webhook URL configured — skipping deploy notification."
+            echo "Looked for WEBHOOK_URL and DOCKHAND_WEBHOOK_URL, under both Secrets and Variables."
+            exit 0
+          fi
+
+          url="$WEBHOOK_URL"
+          if [ -n "$WEBHOOK_TOKEN" ]; then
+            case "$url" in
+              *\?*) url="$url&secret=$WEBHOOK_TOKEN" ;;
+              *)    url="$url?secret=$WEBHOOK_TOKEN" ;;
+            esac
+          else
+            case "$url" in
+              *secret=*) ;;
+              *) echo "Note: no WEBHOOK_TOKEN, and the URL carries no ?secret= — expect a 403." ;;
+            esac
+          fi
+
+          # No -f: on an error status we want to read the body, not just die on it.
+          resp=$(curl -sS -w '\n%{http_code}' --retry 3 --retry-delay 5 "$url" || true)
+          status=$(printf '%s' "$resp" | tail -n1)
+          body=$(printf '%s' "$resp" | sed '$d')
+          echo "Dockhand responded $status: $body"
+
+          case "$status" in
+            2*) ;;
+            401|403)
+              echo "::error::Dockhand rejected the webhook ($status). Set WEBHOOK_TOKEN as a secret, or put ?secret=… in WEBHOOK_URL."
+              exit 1
+              ;;
+            *)
+              echo "::error::Dockhand returned $status — see the response above."
+              exit 1
+              ;;
+          esac
+
+          # Dockhand answers 200 even when the sync fails; the outcome is only in the JSON body.
+          if ! printf '%s' "$body" | jq -e '.success == true' >/dev/null 2>&1; then
+            echo "::error::Dockhand accepted the request but the sync failed — see the response above."
+            exit 1
+          fi
