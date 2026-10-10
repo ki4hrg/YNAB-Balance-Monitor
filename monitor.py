@@ -9,6 +9,7 @@ import sys
 import json
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from datetime import datetime, timedelta, date
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
@@ -35,6 +36,9 @@ UPDATE_APPRISE_URLS = os.environ.get("UPDATE_APPRISE_URLS", "")  # defaults to A
 TZ = os.environ.get("TZ", "")
 
 YNAB_BASE = "https://api.ynab.com/v1"
+
+# Liveness marker for the container HEALTHCHECK (scheduled mode only).
+HEARTBEAT_PATH = "/tmp/heartbeat"
 
 
 @dataclass
@@ -541,6 +545,18 @@ def _parse_schedule(schedule):
     sys.exit(1)
 
 
+def touch_heartbeat():
+    """Update the heartbeat file so the container HEALTHCHECK sees the scheduler as alive.
+
+    Called only from the scheduling loop, never from run_cycle: a hung network
+    call during a cycle should let the heartbeat go stale.
+    """
+    try:
+        Path(HEARTBEAT_PATH).touch()
+    except OSError as e:
+        print(f"Heartbeat: could not write {HEARTBEAT_PATH}: {e}", file=sys.stderr)
+
+
 def _next_occurrence(schedule, after=None):
     """Return the datetime of the next occurrence of schedule after `after` (default: now)."""
     if after is None:
@@ -604,6 +620,8 @@ def main():
     else:
         next_update = None
 
+    touch_heartbeat()
+
     while not shutdown:
         # Sleep until the sooner of the two pending events
         candidates = [t for t in [next_check, next_update] if t is not None]
@@ -617,6 +635,7 @@ def main():
             while wait > 0 and not shutdown:
                 time.sleep(min(wait, 60))
                 wait -= 60
+                touch_heartbeat()
 
         if shutdown:
             break
