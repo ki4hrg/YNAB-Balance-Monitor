@@ -400,7 +400,9 @@ def _send_notification(urls_str, title, message, notify_type):
 
     for attempt in range(2):
         result = notifier.notify(title=title, body=message, notify_type=notify_type)
-        if result is True:
+        # Apprise 2.x returns an AppriseResult, not a bool -- `is True` never matches
+        # it, so every successful send was retried (and delivered twice).
+        if result:
             return True
         if attempt == 0:
             print("Apprise: notification failed, retrying in 5s...", file=sys.stderr)

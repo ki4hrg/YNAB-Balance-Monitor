@@ -1,1 +1,1 @@
-apprise
+apprise>=2,<3
